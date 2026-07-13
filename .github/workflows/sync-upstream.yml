@@ -1,0 +1,41 @@
+name: Sync upstream
+
+# ba-main = upstream mattpocock/skills@main + the BA patch commit(s) on top
+# (reviews are user-triggered only). This workflow keeps that true: nightly it
+# fetches upstream and rebases the BA commits onto the new tip. The dev-skills
+# bump workflow watches THIS repo's ba-main, so if this job breaks, marketplace
+# bumps stall visibly rather than pinning something stale-but-plausible.
+#
+# If the rebase conflicts (upstream touched a patched file), the job fails —
+# resolve locally: git fetch upstream && git rebase upstream/main && git push --force-with-lease.
+
+on:
+  schedule:
+    - cron: "0 6 * * *" # Daily 06:00 UTC, an hour before dev-skills' bump job
+  workflow_dispatch: {}
+
+permissions:
+  contents: write
+
+jobs:
+  sync:
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          ref: ba-main
+          fetch-depth: 0
+
+      - name: Rebase BA patch onto upstream/main
+        run: |
+          set -euo pipefail
+          git config user.name "github-actions[bot]"
+          git config user.email "github-actions[bot]@users.noreply.github.com"
+          git remote add upstream https://github.com/mattpocock/skills.git
+          git fetch upstream main
+          if git merge-base --is-ancestor upstream/main HEAD; then
+            echo "ba-main already contains upstream/main — nothing to do."
+            exit 0
+          fi
+          git rebase upstream/main
+          git push --force-with-lease origin ba-main
