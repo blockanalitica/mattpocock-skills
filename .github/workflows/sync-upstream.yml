@@ -2,12 +2,17 @@ name: Sync upstream
 
 # ba-main = upstream mattpocock/skills@main + the BA patch commit(s) on top
 # (reviews are user-triggered only). This workflow keeps that true: nightly it
-# fetches upstream and rebases the BA commits onto the new tip. The dev-skills
-# bump workflow watches THIS repo's ba-main, so if this job breaks, marketplace
-# bumps stall visibly rather than pinning something stale-but-plausible.
+# rebases the BA commits onto upstream. The dev-skills bump workflow pins
+# ba-main's tip, so if this job breaks, marketplace bumps stall visibly.
+#
+# Anti-abuse cooldown lives HERE (it used to live in dev-skills' bump job, but
+# rebasing refreshes the BA commits' dates, so date-filtering ba-main would
+# select a SHA below the patch): we never rebase onto upstream's tip, only
+# onto the newest upstream commit already >=1 day old, giving a hostile or
+# hijacked upstream commit a window to be noticed and reverted first.
 #
 # If the rebase conflicts (upstream touched a patched file), the job fails —
-# resolve locally: git fetch upstream && git rebase upstream/main && git push --force-with-lease.
+# resolve locally: git fetch upstream && git rebase <target> && git push --force-with-lease.
 
 on:
   schedule:
@@ -16,6 +21,9 @@ on:
 
 permissions:
   contents: write
+
+env:
+  COOLDOWN_DAYS: 1
 
 jobs:
   sync:
@@ -26,16 +34,22 @@ jobs:
           ref: ba-main
           fetch-depth: 0
 
-      - name: Rebase BA patch onto upstream/main
+      - name: Rebase BA patch onto cooled-down upstream/main
         run: |
           set -euo pipefail
           git config user.name "github-actions[bot]"
           git config user.email "github-actions[bot]@users.noreply.github.com"
           git remote add upstream https://github.com/mattpocock/skills.git
           git fetch upstream main
-          if git merge-base --is-ancestor upstream/main HEAD; then
-            echo "ba-main already contains upstream/main — nothing to do."
+          cutoff=$(date -u -d "${COOLDOWN_DAYS} days ago" +%Y-%m-%dT%H:%M:%SZ)
+          target=$(git rev-list -1 --before="$cutoff" upstream/main)
+          if [ -z "$target" ]; then
+            echo "No upstream commit older than ${COOLDOWN_DAYS}d — nothing to do."
             exit 0
           fi
-          git rebase upstream/main
+          if git merge-base --is-ancestor "$target" HEAD; then
+            echo "ba-main already contains upstream ${target:0:7} — nothing to do."
+            exit 0
+          fi
+          git rebase "$target"
           git push --force-with-lease origin ba-main
